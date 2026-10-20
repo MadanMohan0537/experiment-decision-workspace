@@ -1,131 +1,94 @@
-# 🧪 AI Product Experimentation Platform
+# Experiment Decision Workspace
 
-<p align="center">
-  <strong>A portfolio-grade product decision operating system for designing, monitoring, analyzing, and deciding A/B product experiments.</strong>
-</p>
+**A browser workspace for keeping a running record of product experiments: declare the hypothesis and minimum useful effect, enter observed counts and guardrails, get a calculated Hold / Ship / Iterate / Rollback recommendation, and log the human decision. Saved decisions become a searchable record of what was learned.**
 
-<p align="center">
-  <a href="https://nextjs.org"><img src="https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js" alt="Next.js"></a>
-  <a href="https://react.dev"><img src="https://img.shields.io/badge/React-19-61dafb?style=flat-square&logo=react" alt="React"></a>
-  <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-5.0-3178c6?style=flat-square&logo=typescript" alt="TypeScript"></a>
-  <a href="https://deepseek.com"><img src="https://img.shields.io/badge/AI-DeepSeek%20%2F%20Claude-blueviolet?style=flat-square" alt="AI"></a>
-  <a href="https://workers.cloudflare.com"><img src="https://img.shields.io/badge/Deployment-Cloudflare%20Workers-f38020?style=flat-square" alt="Cloudflare Workers"></a>
-</p>
+The GitHub repository was renamed from *ai-product-experimentation-platform*. The rename drops "platform" because the app does not ingest live events or control feature flags. `package.json` `name`, the HTML document title, and the Worker name produced by the build are still `ai-product-experimentation-platform`.
 
----
+## Problem and who it's for
 
-## Demo data, model output and rollout boundaries
+Teams run many experiments, but the reasoning behind each decision (the hypothesis, the guardrails, why it shipped or didn't) lives in scattered docs and spreadsheets and is forgotten by the next planning cycle. Product managers and growth leads need one place to plan an experiment, read it out consistently, and keep the decision and its evidence together.
 
-Start without provider keys for input-specific local planning outlines and local statistical analysis. [lib/ai.ts](lib/ai.ts) labels the no-key result as a local outline. With keys, the existing provider selection remains DeepSeek first, or Anthropic when only its key is configured.
+## Approach
 
-Workspace counts are user-entered evidence, not live telemetry. Progressive rollout is recorded planning state and never changes a production feature flag. Review the working workflow section below for current functionality and limits.
+1. **Plan:** hypothesis, audience, primary conversion metric, baseline rate and relative minimum detectable effect (MDE). The app shows the approximate per-arm sample size (50/50 split, two-sided α = 5%, 80% power) from `sampleSize` in `lib/experiment-engine.ts`.
+2. **Record results:** enter control and treatment visitors and conversions, plus guardrails in their own units with a preferred direction and an allowed regression. A guardrail breach is a raw difference against that allowance, not a second statistical test.
+3. **Read out:** rates, absolute and relative lift, a normal-approximation 95% interval for the difference (clamped to [-1, 1], omitted when the sample is sparse), a two-sided p-value, and a sample-ratio check. The calculated recommendation is Hold, Ship, Iterate, or Rollback. **Ship** requires a non-sparse sample, both arms at the planned size, no sample-ratio mismatch (1% chi-square threshold), a two-sided p-value under 5%, an absolute lift at least as large as the predeclared relative MDE, and at least one guardrail that is within its allowance. A positive primary result with no guardrails stays **Hold**. A breached guardrail, or a significant negative primary difference, is **Rollback**.
+4. **Decide:** record your own decision (Ship, Hold, Iterate, or Rollback) and a planned rollout percentage from 0 to 100. Neither one releases anything. The percentage is saved planning state, not a Cloudflare Workers traffic split.
+5. **Learn:** search saved names, hypotheses, metrics, audiences, and decisions, and export or import the workspace as validated JSON (`version: 1`, at most 200 experiments, import files up to 1 MB).
+6. **Optional planning help:** "Suggest a measurement plan" posts the experiment name, hypothesis, and audience to `/api/ai/design`. With `DEEPSEEK_API_KEY`, that route calls DeepSeek. If only `ANTHROPIC_API_KEY` is set, it calls Anthropic. DeepSeek is used when both keys are set. Without a key, the server builds a deterministic outline and labels the provider `local-outline`, so a template is never presented as AI output.
 
-### Development checks
+## What exists today
 
-```bash
-npm run lint
-npm test
-```
+- A Next.js 16.2.6 / React 19.2.6 app, built with Vinext 0.0.50 and Vite 8.0.13. The UI is `app/page.tsx`. Local dev and the production build use the Cloudflare Vite plugin. The Worker source entry is `worker/index.ts`; `npm run build` emits `dist/server/index.js`.
+- The statistics engine (`lib/experiment-engine.ts`) throws on impossible plans, invalid counts, incomplete guardrails, and malformed imports. Sparse samples (fewer than 5 successes or failures in either arm) do not throw: the readout returns **Hold** with a null p-value and a null interval.
+- **11 engine tests** in `tests/experiment-engine.test.mjs` (`npm run test:engine`). They cover impossible sample-size targets, a positive result that ships with a guardrail, a positive result that holds without guardrails, guardrail override to Rollback, low sample and sparse outcomes, sample-ratio mismatch, a negative result, a zero difference (Iterate), invalid counts and guardrails, empty counts ("Awaiting results"), and import validation. On Node.js v22.23.3, all 11 passed. The file imports `lib/experiment-engine.ts` directly. Node.js enables that type stripping by default in 22.18.0 and later. Node.js 20 cannot load the import. `package.json` declares `engines.node` of `>=22.13.0`.
+- `npm test` runs those engine tests, `npm run build` (`scripts/build-verified.sh`), and `tests/rendered-html.test.mjs` (2 tests: the built worker returns HTML with the development preview meta tag, and `/api/ai/design` returns `local-outline` when no provider key is set). That command passed in this environment. `npm run lint` runs ESLint and reported no findings.
+- Workspace rows stay in this browser's `localStorage` under `variant-experiments-v1` (at most 200 experiments). Observed counts are not sent to a model. The optional planning request sends the experiment name, hypothesis, and audience to this app's `/api/ai/design` route, which calls DeepSeek or Anthropic only when the matching key is configured.
+- No Wrangler config is committed. No GitHub Actions workflow is present, and the GitHub deployments API for this repository returned no deployment records. This README does not claim a live URL.
 
-The test script builds through the verified build wrapper and checks rendered HTML. Read [build verification](scripts/build-verified.sh) before adapting its environment conventions. The current stack uses Next.js 16.2.6, React 19.2.6 and Vinext; Node.js 22.13.0 or later is required.
+## How success would be measured
 
-## 📌 Overview
+| Measure | Status |
+|---|---|
+| Experiments saved with predeclared baseline, MDE and guardrails | Not yet measured |
+| Readouts where the human decision matches the calculated recommendation (and why not, when it differs) | Not yet measured |
+| Reuse: past decisions found via search during new planning | Not yet measured |
 
-**AI Product Experimentation Platform** is a modern decision-support system built for Product Managers, Growth Leads, and Data Scientists. It replaces chaotic spreadsheet tracking with a unified workflow: from **hypothesis design and MDE power calculations** to **real-time telemetry monitoring, guardrail health tracking, and AI-synthesized rollout recommendations**.
+## Limitations
 
----
+- Counts are typed in by hand. There is no event ingestion and no feature-flag integration. The rollout slider is a plan only.
+- The primary metric is a binary conversion rate with two arms and one fixed-horizon look. Repeated peeking is not corrected for. Guardrails are entered numbers, not hypothesis tests.
+- The workspace lives in one browser's `localStorage`. Export before clearing browser data or switching devices.
+- Model-generated plans are proposals to review, not validated designs. The page shows the hypothesis, primary metric, and guardrail names from that proposal.
+- The document title is still "AI Product Experimentation Platform", and its meta description still says the app monitors experiments and makes rollout decisions. The page header in `app/page.tsx` says "Experiment decision workspace".
+- Starter-template files remain in the tree. The running app does not import `app/chatgpt-auth.ts`, `db/`, or `examples/d1/`. `db/schema.ts` exports nothing, and `drizzle/meta/_journal.json` has no migrations. The Sites build plugin still copies `drizzle/` into `dist/.openai` when that directory exists.
+- There is no LICENSE file yet.
 
-## ✨ Key Features
+## Quick start
 
-- **📊 Portfolio Command Center:** Real-time visibility into active experiments, portfolio win rates, average time-to-learn, and active segment risks.
-- **🔬 3-Step AI-Assisted Experiment Designer:**
-  - Formulates testable hypotheses, target audience segments, and variant splits.
-  - Automatically identifies **Primary KPIs**, **Secondary Metrics**, and **Guardrail Metrics** (e.g. latency, error rates, drop-offs).
-  - Calculates Minimum Detectable Effect (MDE) and sample size requirements.
-- **📈 Live Experiment Telemetry & Statistical Significance:**
-  - Conversion trends, confidence interval visualization, and p-value statistical significance alerts.
-  - Detects segment-specific anomalies (e.g. high Android checkout abandonment despite overall iOS conversion lift).
-- **🤖 AI Decision Briefs & Rollout Control:**
-  - Generates auditable **Ship / Iterate / Rollback** recommendations with business justification.
-  - Supports progressive feature rollout controls from 1% to 100%.
-- **🛡️ Provider-Agnostic AI Backend:** DeepSeek or Anthropic selected by configured keys, plus a fixed demo response when neither key is present.
-
----
-
-## 🏗️ Architecture
-
-```mermaid
-flowchart LR
-    A[Product Hypothesis] --> B[AI Experiment Designer]
-    B --> C[Variant Config & Sample Sizing]
-    C --> D[Live Telemetry & Metric Engine]
-    D --> E[Statistical Significance & Guardrail Health]
-    E --> F[AI Decision Recommendation: Ship / Rollback]
-```
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-- **Node.js:** 22.13.0 or later
-- **AI Key:** (Optional) `DEEPSEEK_API_KEY` or `ANTHROPIC_API_KEY`
-
-### Installation
+`package.json` requires Node.js 22.13.0 or later. Run the engine tests on Node.js 22.18.0 or later so type stripping is on by default. API keys are optional.
 
 ```bash
-# Clone the repository
-git clone https://github.com/MadanMohan0537/ai-product-experimentation-platform.git
-cd ai-product-experimentation-platform
-
-# Install dependencies
+git clone https://github.com/MadanMohan0537/experiment-decision-workspace.git
+cd experiment-decision-workspace
 npm install
-
-# Configure environment variables
-cp .env.example .env.local
-# Add your DEEPSEEK_API_KEY or ANTHROPIC_API_KEY (optional: app runs in demo mode without keys)
-
-# Start development server
+npm run test:engine
+cp .env.example .env.local     # optional: DEEPSEEK_API_KEY or ANTHROPIC_API_KEY
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+`npm run dev` starts Vite. With this config it serves http://localhost:5173/.
 
----
+`npm test` runs the engine tests, the verified Vinext build, and `tests/rendered-html.test.mjs`. `npm run lint` runs ESLint.
 
-## 🛠️ Tech Stack
+## Deployment
 
-- **Framework:** Next.js 16 (App Router), React 19
-- **Language:** TypeScript
-- **Styling:** TailwindCSS, Modern CSS
-- **AI Integrations:** DeepSeek API, Anthropic HTTP API
-- **Runtime:** Cloudflare Workers (Vinext) / Vercel
+Cloudflare Workers is the deploy target, using `npx wrangler deploy`. This is not a versioned release: do not use `wrangler versions upload`, a percentage or gradual Worker rollout, or a git tag as the deploy step. The in-app rollout percentage is not that mechanism.
 
----
+No Wrangler config is committed, and this repository does not record a live workers.dev URL. `npm run build` writes `dist/server/wrangler.json`. Deploy with that generated file so the Worker name stays `ai-product-experimentation-platform`:
+
+```bash
+npm run build
+npx wrangler deploy --config dist/server/wrangler.json
+```
+
+That generated config, from the build run here, sets:
+
+- **Worker name:** `ai-product-experimentation-platform` (same as `package.json` `name`). Keep this name so an existing workers.dev hostname for this Worker would not change.
+- **Entry:** `main` is `index.js`, the built file `dist/server/index.js`. Dev uses the source entry `worker/index.ts` through the Cloudflare Vite plugin. This app is TypeScript, so it does not need Python Workers or a language port.
+- **Bindings:** no D1, R2, KV, service, or secret bindings. `.openai/hosting.json` sets `d1` and `r2` to null. Static assets are `../client` relative to the config file. The compatibility flag is `nodejs_compat`.
+- **Secrets:** none are required to boot. `DEEPSEEK_API_KEY` and `ANTHROPIC_API_KEY` are optional and are not declared in the generated config. Counts and decisions are not deployed with the Worker; they stay in the browser.
+
+`npx wrangler deploy` from the repository root, without `--config`, has no Wrangler file to read.
+
+## Which experimentation repo should I read?
+
+| Repo | Use it for |
+|---|---|
+| **experiment-decision-workspace** (this one) | Keeping experiments, readouts and human decisions together over time, in the browser |
+| [ab-test-design-and-readout](https://github.com/MadanMohan0537/ab-test-design-and-readout) | Design preflight and a validity-first readout (Python API) |
+| [bayesian-ab-test-advisor](https://github.com/MadanMohan0537/bayesian-ab-test-advisor) | Bayesian analysis with expected loss (Python) |
 
 ## License
 
-No license file is currently included. Add an explicit license before redistributing implementation code or data.
-
-
-## Working experiment workflow (2026-10 update)
-
-The main product now creates and persists actual experiment drafts in the current browser, rather than showing fixed sample experiments or closing an unsaved design drawer. There is no artificial two-design trial gate. Search and the knowledge base operate on saved experiments and human review decisions.
-
-1. Declare a hypothesis, audience, primary conversion metric, baseline and relative minimum useful effect.
-2. Review the approximate per-arm sample requirement (50/50 assignment, fixed 5% two-sided alpha, 80% power).
-3. Save the draft and record control/treatment visitors and conversions.
-4. Add guardrails in native metric units with a preferred direction and allowed regression.
-5. Inspect calculated rates, absolute/relative lift, a normal-approximation 95% difference interval, two-sided p-value, sample-ratio warning and the computed Hold / Ship / Iterate / Rollback recommendation.
-6. Record your own review decision and a planned rollout percentage. Neither performs a release.
-7. Export the workspace to JSON, import a validated backup, and search prior hypotheses and decisions.
-
-The numerical engine lives in `lib/experiment-engine.ts`; it rejects impossible plans, invalid counts, sparse normal-approximation results and malformed imported drafts. A positive primary result cannot receive a Ship recommendation without entered guardrails. Source-count assumptions and sequential-peeking limits are exposed in each readout. No event ingestion, actual production feature flag, or universal causal validation is claimed.
-
-Optional planning requests now reach the existing design endpoint. Without provider keys, a deterministic outline is built from the supplied goal and audience and labeled `local-outline`, rather than pretending a fixed example is AI-generated. With configured provider keys, provider output remains a proposal to review.
-
-```bash
-npm run test:engine
-```
-
-The engine suite covers sample-size boundaries, positive and negative results, guardrail overrides, sparse/underpowered samples, assignment mismatch, count validation, and draft-import validation. Workspace data stays in browser localStorage; export before changing devices or clearing browser data. Model-assisted planning sends the entered goal/audience to the configured provider; count analysis stays local.
+No license file is included yet.
